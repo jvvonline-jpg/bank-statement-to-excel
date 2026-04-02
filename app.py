@@ -363,188 +363,466 @@ def fix_deposit_withdrawal_classification(transactions, begin_balance):
                 txn['withdrawal'] = amt
                 txn['deposit'] = None
 
-        prev_balance = txn['balance'] if txn['balance'] else prev_balance
+        prev_balance = txn['balance'] if txn['balance'] is not None else prev_balance
 
     return transactions
 
 
-def build_excel(transactions, balance_info):
-    """Build Apple-styled Excel workbook."""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Bank Statement"
+def categorize_withdrawal(desc):
+    """Categorize a withdrawal by type for the purch1 sheet."""
+    d = desc.upper()
+    if d.startswith('CHECK #') or d.startswith('CHECK#'):
+        return 'CHECKS'
+    if 'TRNSFR TO ACCOUNT' in d:
+        return 'SWEEPS TO 7459'
+    return 'OTHER DEBITS'
 
-    # ── Styles ────────────────────────────────────────────────────────────────
+
+def categorize_deposit(desc):
+    """Categorize a deposit by type for the dep1 sheet."""
+    d = desc.upper()
+    if 'TRNSFR FROM ACCOUNT' in d:
+        return 'SWEEPS FROM 7459'
+    return 'REGULAR DEPOSITS'
+
+
+def build_excel(transactions, balance_info):
+    """Build multi-tab Excel workbook matching the Output 1 format."""
+    wb = Workbook()
+    money_fmt = '#,##0.00'
+
+    # ── Shared styles ─────────────────────────────────────────────────────────
     header_fill = PatternFill('solid', fgColor=APPLE_BLUE)
     header_font = Font(name='Helvetica', bold=True, size=11, color=WHITE)
     header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-    title_font = Font(name='Helvetica', bold=True, size=16, color=APPLE_DEEP_BLUE)
-    subtitle_font = Font(name='Helvetica', size=11, color=APPLE_SEC_GRAY)
-    info_label_font = Font(name='Helvetica', bold=True, size=10, color=APPLE_SEC_GRAY)
-    info_value_font = Font(name='Helvetica', bold=True, size=10, color=APPLE_NEAR_BLACK)
-
+    title_font = Font(name='Helvetica', bold=True, size=14, color=APPLE_DEEP_BLUE)
+    section_font = Font(name='Helvetica', bold=True, size=11, color=APPLE_DEEP_BLUE)
+    label_font = Font(name='Helvetica', bold=True, size=10, color=APPLE_SEC_GRAY)
+    value_font = Font(name='Helvetica', bold=True, size=10, color=APPLE_NEAR_BLACK)
     data_font = Font(name='Helvetica', size=10, color=APPLE_NEAR_BLACK)
-    data_font_bold = Font(name='Helvetica', bold=True, size=10, color=APPLE_NEAR_BLACK)
-    money_fmt = '#,##0.00'
-    date_font = Font(name='Helvetica', size=10, color=APPLE_NEAR_BLACK)
-
+    bold_font = Font(name='Helvetica', bold=True, size=10, color=APPLE_NEAR_BLACK)
+    red_font = Font(name='Helvetica', bold=True, size=10, color='FF3B30')
+    thin_border = Border(bottom=Side(style='thin', color=APPLE_MID_GRAY))
+    header_border = Border(bottom=Side(style='medium', color=APPLE_DEEP_BLUE))
     light_gray_fill = PatternFill('solid', fgColor=APPLE_LIGHT_GRAY)
-    alt_row_fill = PatternFill('solid', fgColor='F8F9FA')
+    alt_fill = PatternFill('solid', fgColor='F8F9FA')
     totals_fill = PatternFill('solid', fgColor=APPLE_LIGHT_GRAY)
-
-    thin_border = Border(
-        bottom=Side(style='thin', color=APPLE_MID_GRAY)
-    )
-    header_border = Border(
-        bottom=Side(style='medium', color=APPLE_DEEP_BLUE)
+    totals_border = Border(
+        top=Side(style='medium', color=APPLE_DEEP_BLUE),
+        bottom=Side(style='medium', color=APPLE_DEEP_BLUE),
     )
 
-    # ── Title Section ─────────────────────────────────────────────────────────
-    row = 1
-    ws.merge_cells('A1:F1')
-    ws['A1'].value = "Atlantic Union Bank — Statement Detail"
-    ws['A1'].font = title_font
-    ws['A1'].alignment = Alignment(vertical='center')
-
-    row = 2
-    acct_name = balance_info.get('account_name', '')
+    begin_bal = balance_info.get('begin_balance', 0)
+    end_bal = balance_info.get('end_balance', 0)
+    dep_total_stmt = balance_info.get('deposit_total', 0)
+    wth_total_stmt = balance_info.get('withdrawal_total', 0)
+    dep_count = balance_info.get('deposit_count', 0)
+    wth_count = balance_info.get('withdrawal_count', 0)
+    stmt_date = balance_info.get('statement_date', '')
+    stmt_thru = balance_info.get('statement_thru', '')
     acct_num = balance_info.get('account_number', '')
+    acct_name = balance_info.get('account_name', '')
     acct_type = balance_info.get('account_type', '')
-    ws.merge_cells('A2:F2')
-    ws['A2'].value = f"{acct_name}  |  Account: ***{acct_num[-4:] if len(acct_num) >= 4 else acct_num}  |  {acct_type}"
-    ws['A2'].font = subtitle_font
+    begin_date = balance_info.get('begin_date', '')
+    end_date = balance_info.get('end_date', '')
 
-    # ── Balance Summary ───────────────────────────────────────────────────────
+    # Determine statement month label from begin_date
+    if begin_date:
+        from datetime import datetime as dt
+        try:
+            d = dt.strptime(begin_date, '%m/%d/%Y')
+            stmt_label = d.strftime('%B %Y')
+        except Exception:
+            stmt_label = begin_date
+    else:
+        stmt_label = ''
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Sheet 1: Statement Summary
+    # ══════════════════════════════════════════════════════════════════════════
+    ws = wb.active
+    ws.title = 'Statement Summary'
+
+    ws['A1'] = 'Atlantic Union Bank'
+    ws['A1'].font = title_font
+    ws['A2'] = f'Statement – {stmt_label}'
+    ws['A2'].font = Font(name='Helvetica', bold=True, size=12, color=APPLE_NEAR_BLACK)
+
     row = 4
-    labels = ['Beginning Balance:', 'Ending Balance:', 'Deposits:', 'Withdrawals:']
-    values = [
-        f"${balance_info.get('begin_balance', 0):,.2f}  ({balance_info.get('begin_date', '')})",
-        f"${balance_info.get('end_balance', 0):,.2f}  ({balance_info.get('end_date', '')})",
-        f"{balance_info.get('deposit_count', 0)} items  —  ${balance_info.get('deposit_total', 0):,.2f}",
-        f"{balance_info.get('withdrawal_count', 0)} items  —  ${balance_info.get('withdrawal_total', 0):,.2f}",
+    info_rows = [
+        ('Account Number:', acct_num),
+        ('Account Name:', acct_name),
+        ('Statement Date:', stmt_date),
+        ('Statement Thru:', stmt_thru),
+        ('Account Type:', acct_type),
     ]
-    for idx, (lbl, val) in enumerate(zip(labels, values)):
-        r = row + idx
-        ws.cell(row=r, column=1, value=lbl).font = info_label_font
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.cell(row=r, column=2, value=val).font = info_value_font
+    for lbl, val in info_rows:
+        ws.cell(row=row, column=1, value=lbl).font = label_font
+        ws.cell(row=row, column=3, value=val).font = value_font
+        row += 1
 
-    # ── Column Headers ────────────────────────────────────────────────────────
-    row = 9
-    headers = ['Date', 'Description', 'Deposits', 'Withdrawals', 'Balance', 'Status']
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col, value=h)
+    row += 1
+    ws.cell(row=row, column=1, value='BALANCE SUMMARY').font = section_font
+    row += 1
+    ws.cell(row=row, column=1, value=f'Beginning Balance as of {begin_date}').font = data_font
+    ws.cell(row=row, column=3, value=begin_bal).font = value_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    ws.cell(row=row, column=1, value=f'+ Deposits and Credits  ({dep_count})').font = data_font
+    ws.cell(row=row, column=3, value=dep_total_stmt).font = value_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    ws.cell(row=row, column=1, value=f'- Withdrawals and Debits  ({wth_count})').font = data_font
+    ws.cell(row=row, column=3, value=wth_total_stmt).font = value_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    ws.cell(row=row, column=1, value=f'Ending Balance as of {end_date}').font = bold_font
+    ws.cell(row=row, column=3, value=end_bal).font = Font(name='Helvetica', bold=True, size=10, color=APPLE_DEEP_BLUE)
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    for lbl in ['Service Charges for Period', 'Average Collected for Period', 'Minimum Balance for Period']:
+        ws.cell(row=row, column=1, value=lbl).font = data_font
+        ws.cell(row=row, column=3, value=0).font = data_font
+        ws.cell(row=row, column=3).number_format = money_fmt
+        row += 1
+
+    row += 1
+    ws.cell(row=row, column=1, value='RECONCILIATION CHECK').font = section_font
+    row += 1
+    recon_start = row
+    ws.cell(row=row, column=1, value='Sum of All Deposits (from dep1 sheet)').font = data_font
+    ws.cell(row=row, column=3).value = "='Table 1'!C" + str(2 + len(transactions) + 1)
+    ws.cell(row=row, column=3).font = value_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    ws.cell(row=row, column=1, value='Sum of All Withdrawals (from purch1 sheet)').font = data_font
+    ws.cell(row=row, column=3).value = "='Table 1'!D" + str(2 + len(transactions) + 1)
+    ws.cell(row=row, column=3).font = value_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    ws.cell(row=row, column=1, value='Deposit Difference vs Statement (should be 0)').font = data_font
+    ws.cell(row=row, column=3).value = f'=C{recon_start}-{dep_total_stmt}'
+    ws.cell(row=row, column=3).font = red_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+    row += 1
+    ws.cell(row=row, column=1, value='Withdrawal Difference vs Statement (should be 0)').font = data_font
+    ws.cell(row=row, column=3).value = f'=C{recon_start+1}-{wth_total_stmt}'
+    ws.cell(row=row, column=3).font = red_font
+    ws.cell(row=row, column=3).number_format = money_fmt
+
+    ws.column_dimensions['A'].width = 50
+    ws.column_dimensions['C'].width = 18
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Sheet 2: purch1 (Withdrawals/Debits)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet('purch1')
+
+    # Categorize withdrawals
+    checks = []
+    other_debits = []
+    sweeps_to = []
+    for t in transactions:
+        if t['withdrawal'] is None:
+            continue
+        cat = categorize_withdrawal(t['description'])
+        item = {'date': t['date'], 'description': t['description'], 'amount': t['withdrawal']}
+        if cat == 'CHECKS':
+            checks.append(item)
+        elif cat == 'SWEEPS TO 7459':
+            sweeps_to.append(item)
+        else:
+            other_debits.append(item)
+
+    # Headers
+    for col, h in enumerate(['#', 'Date', 'Description', 'Amount', 'Running Total', '', 'Stmt WD Total', 'Difference'], 1):
+        cell = ws2.cell(row=1, column=col, value=h)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = header_align
         cell.border = header_border
 
-    # ── Beginning Balance Row ─────────────────────────────────────────────────
-    row = 10
-    begin_bal = balance_info.get('begin_balance', 0)
-    ws.cell(row=row, column=1, value=balance_info.get('begin_date', '')).font = data_font_bold
-    ws.cell(row=row, column=2, value='BEGINNING BALANCE').font = data_font_bold
-    ws.cell(row=row, column=5, value=begin_bal).font = data_font_bold
-    ws.cell(row=row, column=5).number_format = money_fmt
-    for c in range(1, 7):
-        ws.cell(row=row, column=c).fill = light_gray_fill
-        ws.cell(row=row, column=c).border = thin_border
+    row = 2
+    num = 0
 
-    # ── Transaction Data ──────────────────────────────────────────────────────
-    data_start = 11
-    for idx, txn in enumerate(transactions):
-        r = data_start + idx
-        ws.cell(row=r, column=1, value=txn['date']).font = date_font
-        ws.cell(row=r, column=2, value=txn['description']).font = data_font
-
-        if txn['deposit'] is not None:
-            ws.cell(row=r, column=3, value=txn['deposit']).font = data_font
-            ws.cell(row=r, column=3).number_format = money_fmt
-
-        if txn['withdrawal'] is not None:
-            ws.cell(row=r, column=4, value=txn['withdrawal']).font = data_font
+    def write_wd_section(ws, start_row, label, items, num_start):
+        r = start_row
+        ws.cell(row=r, column=1, value=label).font = section_font
+        r += 1
+        first_data = r
+        for i, item in enumerate(items):
+            num = num_start + i + 1
+            ws.cell(row=r, column=1, value=num).font = data_font
+            ws.cell(row=r, column=2, value=item['date']).font = data_font
+            ws.cell(row=r, column=3, value=item['description']).font = data_font
+            ws.cell(row=r, column=4, value=item['amount']).font = data_font
             ws.cell(row=r, column=4).number_format = money_fmt
+            if r == first_data:
+                ws.cell(row=r, column=5).value = f'=D{r}'
+            else:
+                ws.cell(row=r, column=5).value = f'=D{r}+E{r-1}'
+            ws.cell(row=r, column=5).number_format = money_fmt
+            ws.cell(row=r, column=5).font = data_font
+            if i % 2 == 1:
+                for c in range(1, 6):
+                    ws.cell(row=r, column=c).fill = alt_fill
+            for c in range(1, 6):
+                ws.cell(row=r, column=c).border = thin_border
+            r += 1
+        last_data = r - 1
+        return r, num_start + len(items), first_data, last_data
 
-        # Balance: use formula referencing previous balance + deposit - withdrawal
-        if idx == 0:
-            ws.cell(row=r, column=5).value = f'=E10+C{r}-D{r}'
-        else:
-            ws.cell(row=r, column=5).value = f'=E{r-1}+C{r}-D{r}'
-        ws.cell(row=r, column=5).number_format = money_fmt
-        ws.cell(row=r, column=5).font = data_font
+    # Stmt WD Total in G3
+    ws2.cell(row=2, column=7, value='Stmt Total All WD').font = label_font
 
-        ws.cell(row=r, column=6, value='').font = data_font
+    # Write CHECKS section
+    row, num, chk_first, chk_last = write_wd_section(ws2, row, 'CHECKS', checks, 0)
+    ws2.cell(row=3, column=7, value=wth_total_stmt).font = value_font
+    ws2.cell(row=3, column=7).number_format = money_fmt
 
-        # Alternating row colors
-        if idx % 2 == 1:
-            for c in range(1, 7):
-                ws.cell(row=r, column=c).fill = alt_row_fill
+    # Write OTHER DEBITS section
+    if other_debits:
+        row += 1
+        row, num, od_first, od_last = write_wd_section(ws2, row, 'OTHER DEBITS', other_debits, num)
 
-        for c in range(1, 7):
-            ws.cell(row=r, column=c).border = thin_border
+    # Write SWEEPS TO 7459 section
+    if sweeps_to:
+        row += 1
+        row, num, sw_first, sw_last = write_wd_section(ws2, row, 'SWEEPS TO 7459', sweeps_to, num)
+        # Subtotal for sweeps
+        ws2.cell(row=row, column=3, value='TOTAL SWEEPS TO 7459').font = bold_font
+        ws2.cell(row=row, column=4).value = f'=SUM(D{sw_first}:D{sw_last})'
+        ws2.cell(row=row, column=4).number_format = money_fmt
+        ws2.cell(row=row, column=4).font = bold_font
+        ws2.cell(row=row, column=5).value = f'=E{sw_last}'
+        ws2.cell(row=row, column=5).number_format = money_fmt
+        ws2.cell(row=row, column=5).font = bold_font
+        for c in range(1, 6):
+            ws2.cell(row=row, column=c).fill = totals_fill
+        row += 1
 
-    last_data = data_start + len(transactions) - 1
+    # Track last individual data row (before any subtotals)
+    all_wd_items = checks + other_debits + sweeps_to
+    # Count actual data rows written (section labels + items, no subtotals)
+    # The last individual item row is: row - 2 if there was a subtotal, otherwise row - 1
+    # Simpler: count from row 3 to the row before TOTAL SWEEPS
+    last_item_row = row - 2 if sweeps_to else row - 1
 
-    # ── Totals Row ────────────────────────────────────────────────────────────
-    totals_row = last_data + 1
-    ws.cell(row=totals_row, column=1, value='TOTALS').font = Font(
+    # Grand total
+    row += 1
+    grand_row = row
+    ws2.cell(row=row, column=3, value='GRAND TOTAL ALL WITHDRAWALS').font = Font(
         name='Helvetica', bold=True, size=11, color=APPLE_DEEP_BLUE
     )
-    ws.cell(row=totals_row, column=3).value = f'=SUM(C{data_start}:C{last_data})'
-    ws.cell(row=totals_row, column=3).number_format = money_fmt
-    ws.cell(row=totals_row, column=3).font = data_font_bold
-    ws.cell(row=totals_row, column=4).value = f'=SUM(D{data_start}:D{last_data})'
-    ws.cell(row=totals_row, column=4).number_format = money_fmt
-    ws.cell(row=totals_row, column=4).font = data_font_bold
-    ws.cell(row=totals_row, column=5).value = f'=E{last_data}'
-    ws.cell(row=totals_row, column=5).number_format = money_fmt
-    ws.cell(row=totals_row, column=5).font = data_font_bold
-    for c in range(1, 7):
-        ws.cell(row=totals_row, column=c).fill = totals_fill
-        ws.cell(row=totals_row, column=c).border = Border(
-            top=Side(style='medium', color=APPLE_DEEP_BLUE),
-            bottom=Side(style='medium', color=APPLE_DEEP_BLUE)
-        )
+    ws2.cell(row=row, column=4).value = f'=SUM(D3:D{last_item_row})'
+    ws2.cell(row=row, column=4).number_format = money_fmt
+    ws2.cell(row=row, column=4).font = bold_font
+    ws2.cell(row=row, column=5).value = f'=D{row}'
+    ws2.cell(row=row, column=5).number_format = money_fmt
+    ws2.cell(row=row, column=5).font = bold_font
+    for c in range(1, 9):
+        ws2.cell(row=row, column=c).fill = totals_fill
+        ws2.cell(row=row, column=c).border = totals_border
 
-    # ── Summary Section ───────────────────────────────────────────────────────
-    sum_row = totals_row + 2
-    ws.cell(row=sum_row, column=1, value='Total items:').font = info_label_font
-    ws.cell(row=sum_row, column=3, value=len(transactions)).font = info_value_font
-    sum_row += 1
-    ws.cell(row=sum_row, column=1, value='Beginning balance:').font = info_label_font
-    ws.cell(row=sum_row, column=5, value=begin_bal).font = info_value_font
-    ws.cell(row=sum_row, column=5).number_format = money_fmt
-    sum_row += 1
-    ws.cell(row=sum_row, column=1, value='Ending balance:').font = info_label_font
-    ws.cell(row=sum_row, column=5).value = f'=E{last_data}'
-    ws.cell(row=sum_row, column=5).font = info_value_font
-    ws.cell(row=sum_row, column=5).number_format = money_fmt
+    # Difference
+    ws2.cell(row=3, column=8).value = f'=E{grand_row}-G3'
+    ws2.cell(row=3, column=8).font = red_font
+    ws2.cell(row=3, column=8).number_format = money_fmt
 
-    # ── Verification Row ──────────────────────────────────────────────────────
-    sum_row += 1
-    ws.cell(row=sum_row, column=1, value='Statement ending balance:').font = info_label_font
-    ws.cell(row=sum_row, column=5, value=balance_info.get('end_balance', 0)).font = info_value_font
-    ws.cell(row=sum_row, column=5).number_format = money_fmt
-    sum_row += 1
-    ws.cell(row=sum_row, column=1, value='Difference:').font = Font(
-        name='Helvetica', bold=True, size=10, color='FF3B30'
+    ws2.column_dimensions['A'].width = 6
+    ws2.column_dimensions['B'].width = 12
+    ws2.column_dimensions['C'].width = 50
+    ws2.column_dimensions['D'].width = 16
+    ws2.column_dimensions['E'].width = 16
+    ws2.column_dimensions['F'].width = 3
+    ws2.column_dimensions['G'].width = 18
+    ws2.column_dimensions['H'].width = 16
+    ws2.freeze_panes = 'A2'
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Sheet 3: dep1 (Deposits/Credits)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws3 = wb.create_sheet('dep1')
+
+    regular_deps = []
+    sweeps_from = []
+    for t in transactions:
+        if t['deposit'] is None:
+            continue
+        cat = categorize_deposit(t['description'])
+        item = {'date': t['date'], 'description': t['description'], 'amount': t['deposit']}
+        if cat == 'SWEEPS FROM 7459':
+            sweeps_from.append(item)
+        else:
+            regular_deps.append(item)
+
+    for col, h in enumerate(['Date', 'Description', '', 'Amount', 'Running Total', '', 'Stmt Dep Total', 'Difference'], 1):
+        cell = ws3.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = header_border
+
+    row = 2
+
+    def write_dep_section(ws, start_row, label, items):
+        r = start_row
+        ws.cell(row=r, column=1, value=label).font = section_font
+        r += 1
+        first_data = r
+        for i, item in enumerate(items):
+            ws.cell(row=r, column=1, value=item['date']).font = data_font
+            ws.cell(row=r, column=2, value=item['description']).font = data_font
+            ws.cell(row=r, column=4, value=item['amount']).font = data_font
+            ws.cell(row=r, column=4).number_format = money_fmt
+            if r == first_data:
+                ws.cell(row=r, column=5).value = f'=D{r}'
+            else:
+                ws.cell(row=r, column=5).value = f'=D{r}+E{r-1}'
+            ws.cell(row=r, column=5).number_format = money_fmt
+            ws.cell(row=r, column=5).font = data_font
+            if i % 2 == 1:
+                for c in [1, 2, 4, 5]:
+                    ws.cell(row=r, column=c).fill = alt_fill
+            for c in [1, 2, 4, 5]:
+                ws.cell(row=r, column=c).border = thin_border
+            r += 1
+        last_data = r - 1
+        return r, first_data, last_data
+
+    ws3.cell(row=2, column=7, value='Stmt Total All Deposits').font = label_font
+
+    row, reg_first, reg_last = write_dep_section(ws3, row, 'REGULAR DEPOSITS', regular_deps)
+    ws3.cell(row=3, column=7, value=dep_total_stmt).font = value_font
+    ws3.cell(row=3, column=7).number_format = money_fmt
+
+    if sweeps_from:
+        row += 1
+        row, sw_first, sw_last = write_dep_section(ws3, row, 'SWEEPS FROM 7459', sweeps_from)
+        ws3.cell(row=row, column=2, value='TOTAL SWEEPS FROM 7459').font = bold_font
+        ws3.cell(row=row, column=4).value = f'=SUM(D{sw_first}:D{sw_last})'
+        ws3.cell(row=row, column=4).number_format = money_fmt
+        ws3.cell(row=row, column=4).font = bold_font
+        ws3.cell(row=row, column=5).value = f'=E{sw_last}'
+        ws3.cell(row=row, column=5).number_format = money_fmt
+        ws3.cell(row=row, column=5).font = bold_font
+        for c in [1, 2, 4, 5]:
+            ws3.cell(row=row, column=c).fill = totals_fill
+        row += 1
+
+    last_dep_item_row = row - 2 if sweeps_from else row - 1
+
+    row += 1
+    grand_row = row
+    ws3.cell(row=row, column=2, value='GRAND TOTAL ALL DEPOSITS').font = Font(
+        name='Helvetica', bold=True, size=11, color=APPLE_DEEP_BLUE
     )
-    ws.cell(row=sum_row, column=5).value = f'=E{sum_row-1}-E{sum_row-2}'
-    ws.cell(row=sum_row, column=5).font = Font(
-        name='Helvetica', bold=True, size=10, color='FF3B30'
+    ws3.cell(row=row, column=4).value = f'=SUM(D3:D{last_dep_item_row})'
+    ws3.cell(row=row, column=4).number_format = money_fmt
+    ws3.cell(row=row, column=4).font = bold_font
+    ws3.cell(row=row, column=5).value = f'=D{row}'
+    ws3.cell(row=row, column=5).number_format = money_fmt
+    ws3.cell(row=row, column=5).font = bold_font
+    for c in range(1, 9):
+        ws3.cell(row=row, column=c).fill = totals_fill
+        ws3.cell(row=row, column=c).border = totals_border
+
+    ws3.cell(row=3, column=8).value = f'=E{grand_row}-G3'
+    ws3.cell(row=3, column=8).font = red_font
+    ws3.cell(row=3, column=8).number_format = money_fmt
+
+    ws3.column_dimensions['A'].width = 12
+    ws3.column_dimensions['B'].width = 50
+    ws3.column_dimensions['C'].width = 3
+    ws3.column_dimensions['D'].width = 16
+    ws3.column_dimensions['E'].width = 16
+    ws3.column_dimensions['F'].width = 3
+    ws3.column_dimensions['G'].width = 18
+    ws3.column_dimensions['H'].width = 16
+    ws3.freeze_panes = 'A2'
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Sheet 4: Table 1 (Full Transaction Detail)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws4 = wb.create_sheet('Table 1')
+
+    for col, h in enumerate(['Date', 'Description', 'Deposits', 'Withdrawals', 'Balance'], 1):
+        cell = ws4.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = header_border
+
+    # Beginning balance
+    ws4.cell(row=2, column=1, value=begin_date).font = bold_font
+    ws4.cell(row=2, column=2, value='BEGINNING BALANCE').font = bold_font
+    ws4.cell(row=2, column=5, value=begin_bal).font = bold_font
+    ws4.cell(row=2, column=5).number_format = money_fmt
+    for c in range(1, 6):
+        ws4.cell(row=2, column=c).fill = light_gray_fill
+        ws4.cell(row=2, column=c).border = thin_border
+
+    for idx, txn in enumerate(transactions):
+        r = 3 + idx
+        ws4.cell(row=r, column=1, value=txn['date']).font = data_font
+        ws4.cell(row=r, column=2, value=txn['description']).font = data_font
+        if txn['deposit'] is not None:
+            ws4.cell(row=r, column=3, value=txn['deposit']).font = data_font
+            ws4.cell(row=r, column=3).number_format = money_fmt
+        if txn['withdrawal'] is not None:
+            ws4.cell(row=r, column=4, value=txn['withdrawal']).font = data_font
+            ws4.cell(row=r, column=4).number_format = money_fmt
+        ws4.cell(row=r, column=5, value=txn['balance']).font = data_font
+        ws4.cell(row=r, column=5).number_format = money_fmt
+        if idx % 2 == 1:
+            for c in range(1, 6):
+                ws4.cell(row=r, column=c).fill = alt_fill
+        for c in range(1, 6):
+            ws4.cell(row=r, column=c).border = thin_border
+
+    last_row = 2 + len(transactions)
+
+    # Totals
+    tr = last_row + 1
+    ws4.cell(row=tr, column=1, value='TOTALS').font = Font(
+        name='Helvetica', bold=True, size=11, color=APPLE_DEEP_BLUE
     )
-    ws.cell(row=sum_row, column=5).number_format = money_fmt
+    ws4.cell(row=tr, column=3).value = f'=SUM(C2:C{last_row})'
+    ws4.cell(row=tr, column=3).number_format = money_fmt
+    ws4.cell(row=tr, column=3).font = bold_font
+    ws4.cell(row=tr, column=4).value = f'=SUM(D2:D{last_row})'
+    ws4.cell(row=tr, column=4).number_format = money_fmt
+    ws4.cell(row=tr, column=4).font = bold_font
+    for c in range(1, 6):
+        ws4.cell(row=tr, column=c).fill = totals_fill
+        ws4.cell(row=tr, column=c).border = totals_border
 
-    # ── Column Widths ─────────────────────────────────────────────────────────
-    ws.column_dimensions['A'].width = 14
-    ws.column_dimensions['B'].width = 55
-    ws.column_dimensions['C'].width = 18
-    ws.column_dimensions['D'].width = 18
-    ws.column_dimensions['E'].width = 18
-    ws.column_dimensions['F'].width = 16
+    # Reconciliation
+    tr += 1
+    ws4.cell(row=tr, column=2, value='Statement Deposit Total').font = label_font
+    ws4.cell(row=tr, column=3, value=dep_total_stmt).font = value_font
+    ws4.cell(row=tr, column=3).number_format = money_fmt
+    tr += 1
+    ws4.cell(row=tr, column=2, value='Statement Withdrawal Total').font = label_font
+    ws4.cell(row=tr, column=4, value=wth_total_stmt).font = value_font
+    ws4.cell(row=tr, column=4).number_format = money_fmt
+    tr += 1
+    ws4.cell(row=tr, column=2, value='Deposit Difference (should be 0)').font = data_font
+    ws4.cell(row=tr, column=3).value = f'=C{last_row+1}-{dep_total_stmt}'
+    ws4.cell(row=tr, column=3).font = red_font
+    ws4.cell(row=tr, column=3).number_format = money_fmt
+    tr += 1
+    ws4.cell(row=tr, column=2, value='Withdrawal Difference (should be 0)').font = data_font
+    ws4.cell(row=tr, column=4).value = f'=D{last_row+1}-{wth_total_stmt}'
+    ws4.cell(row=tr, column=4).font = red_font
+    ws4.cell(row=tr, column=4).number_format = money_fmt
 
-    ws.freeze_panes = 'A10'
+    ws4.column_dimensions['A'].width = 14
+    ws4.column_dimensions['B'].width = 55
+    ws4.column_dimensions['C'].width = 18
+    ws4.column_dimensions['D'].width = 18
+    ws4.column_dimensions['E'].width = 18
+    ws4.freeze_panes = 'A2'
 
     return wb
 
