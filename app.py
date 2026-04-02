@@ -534,6 +534,12 @@ def build_excel(transactions, balance_info):
         else:
             other_debits.append(item)
 
+    # Sort checks by check number ascending
+    def _check_num(item):
+        m = re.search(r'#(\d+)', item['description'])
+        return int(m.group(1)) if m else 0
+    checks.sort(key=_check_num)
+
     # Headers
     for col, h in enumerate(['#', 'Date', 'Description', 'Amount', 'Running Total', '', 'Stmt WD Total', 'Difference'], 1):
         cell = ws2.cell(row=1, column=col, value=h)
